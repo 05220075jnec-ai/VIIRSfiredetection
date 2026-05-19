@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "bhutan_fire_clusters",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "cluster": 0, "points": 5 }, "geometry": { "type": "Polygon", "coordinates": [ [ [ 91.469200134277344, 26.738641738891602 ], [ 91.804298400878906, 26.795375823974609 ], [ 91.786514282226562, 26.757022857666016 ], [ 91.685256958007812, 26.746925354003906 ], [ 91.469200134277344, 26.738641738891602 ] ] ] } }
+]
+}
