@@ -22,6 +22,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GRANULE_TOKEN = re.compile(r"\.A(\d{7})\.(\d{4})\.")
 
 
+def configure_earthdata_netrc() -> None:
+    for name in ("netrc", ".netrc", "_netrc"):
+        local_netrc = PROJECT_ROOT / name
+        if local_netrc.exists():
+            os.environ["NETRC"] = str(local_netrc.resolve())
+            return
+
+
 def granule_key(text: str) -> str:
     # Convert a filename or URL into a comparable timestamp key.
     match = GRANULE_TOKEN.search(text)
@@ -319,11 +327,8 @@ def main() -> None:
     parser.add_argument("--local-only", action="store_true")
     args = parser.parse_args()
 
-    # Use the project-local .netrc if present.
-    # This lets Earthdata authentication work from this folder in VS Code.
-    local_netrc = PROJECT_ROOT / ".netrc"
-    if local_netrc.exists():
-        os.environ.setdefault("NETRC", str(local_netrc.resolve()))
+    # Use project-local Earthdata credentials when present.
+    configure_earthdata_netrc()
 
     # Read the exact Bhutan boundary. If --district is supplied, clipping uses
     # that dzongkhag polygon while NASA search still uses the boundary bbox.
