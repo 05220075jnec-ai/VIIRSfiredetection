@@ -14,6 +14,8 @@ from shapely import contains_xy
 from sklearn.cluster import DBSCAN
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
 # VIIRS filenames contain a timestamp like:
 # VNP02MOD.A2023100.0648.002....
 # This regex extracts AYYYYDDD and HHMM so we can pair VNP02MOD with VNP03MOD.
@@ -302,10 +304,14 @@ def main() -> None:
     )
     parser.add_argument("--start", required=True, help="Start date/time, e.g. 2023-04-08")
     parser.add_argument("--end", required=True, help="End date/time, e.g. 2023-04-17")
-    parser.add_argument("--boundary", default="bhutan_dzong_web.geojson", type=Path)
+    parser.add_argument(
+        "--boundary",
+        default=PROJECT_ROOT / "data" / "boundaries" / "bhutan_dzong_web.geojson",
+        type=Path,
+    )
     parser.add_argument("--district", default=None)
-    parser.add_argument("--data-dir", default="data", type=Path)
-    parser.add_argument("--out-dir", default="outputs", type=Path)
+    parser.add_argument("--data-dir", default=PROJECT_ROOT / "data" / "raw", type=Path)
+    parser.add_argument("--out-dir", default=PROJECT_ROOT / "outputs" / "bhutan", type=Path)
     parser.add_argument("--percentile", default=99.9, type=float)
     parser.add_argument("--cluster-eps", default=0.5, type=float)
     parser.add_argument("--min-samples", default=4, type=int)
@@ -315,7 +321,7 @@ def main() -> None:
 
     # Use the project-local .netrc if present.
     # This lets Earthdata authentication work from this folder in VS Code.
-    local_netrc = Path(".netrc")
+    local_netrc = PROJECT_ROOT / ".netrc"
     if local_netrc.exists():
         os.environ.setdefault("NETRC", str(local_netrc.resolve()))
 
