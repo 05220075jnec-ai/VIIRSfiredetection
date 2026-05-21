@@ -5,3 +5,5 @@ __pycache__/
 venv/
 env/
 gee_env/
+venvfp/
+WildfirePrediction/venvfp/
