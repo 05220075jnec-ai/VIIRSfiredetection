@@ -43,3 +43,69 @@ Keep Earthdata credentials in a local `.netrc` file at the project root. The fil
 ```powershell
 python scripts\fetch_and_detect_bhutan_viirs.py --start 2023-04-08 --end 2023-04-17
 ```
+
+## Run Automatic VIIRS NRT Monitoring
+
+This fetches raw VIIRS NRT moderate-resolution radiance and geolocation swaths for:
+
+- Suomi NPP: `VNP02MOD_NRT` + `VNP03MOD_NRT`
+- NOAA-20: `VJ102MOD_NRT` + `VJ103MOD_NRT`
+- NOAA-21: `VJ202MOD_NRT` + `VJ203MOD_NRT`
+
+It applies the same Bhutan boundary and M13 log-tail detection logic used by `scripts\fetch_and_detect_bhutan_viirs.py`, including the `0 < M13 < 100` raw-radiance sanity filter.
+
+Run once:
+
+```powershell
+python scripts\auto_viirs_nrt_fire_detection.py --once
+```
+
+Run continuously every 15 minutes:
+
+```powershell
+python scripts\auto_viirs_nrt_fire_detection.py --interval-minutes 15
+```
+
+Run continuously and import each cycle into the ForestFireDashboard PostgreSQL database:
+
+```powershell
+python scripts\auto_viirs_nrt_fire_detection.py --interval-minutes 15 --lookback-hours 24 --max-granules 200 --dashboard-import
+```
+
+This requires the dashboard database to be running from `ForestFireDashboard-main`:
+
+```powershell
+docker compose up -d
+```
+
+The Python script calls:
+
+```text
+ForestFireDashboard-main/server/scripts/importCustomViirsOutput.js
+```
+
+That importer converts `outputs/viirs_nrt/viirs_nrt_hotspots.csv` into the dashboard's existing `fire_data` table, so the current React map can display the custom VIIRS detections through `/api/fire-data`.
+
+Default outputs:
+
+```text
+outputs/viirs_nrt/viirs_nrt_hotspots.csv
+outputs/viirs_nrt/viirs_nrt_hotspots.geojson
+outputs/viirs_nrt/viirs_nrt_hotspots.shp
+outputs/viirs_nrt/viirs_nrt_clusters.geojson
+outputs/viirs_nrt/processed_granules.json
+```
+
+Downloaded NRT granules are saved under:
+
+```text
+data/viirs_nrt/
+```
+
+Useful options:
+
+```powershell
+python scripts\auto_viirs_nrt_fire_detection.py --once --lookback-hours 12 --max-granules 120
+python scripts\auto_viirs_nrt_fire_detection.py --sensors suomi_npp,noaa20
+python scripts\auto_viirs_nrt_fire_detection.py --reprocess --once
+```

@@ -1,0 +1,12 @@
+numpy
+pandas
+geopandas
+rasterio
+rioxarray
+xarray
+shapely
+pyproj
+scipy
+folium
+matplotlib
+earthaccess
