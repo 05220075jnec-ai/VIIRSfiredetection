@@ -1,9 +1,51 @@
 .netrc
+_netrc
 __pycache__/
 *.py[cod]
 .venv/
+.venv-*/
 venv/
 env/
 gee_env/
-venvfp/
-WildfirePrediction/venvfp/
+.pyhdf-wheel-check/
+
+# Raw satellite and geospatial data
+data/
+data_*/
+**/data/
+**/Data/
+**/Administrative Boundaries/
+*.nc
+*.hdf
+*.h5
+*.hdf5
+*.tif
+*.tiff
+*.npy
+*.npz
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.gpkg
+*.geojson
+*.csv
+partial_*
+
+# Generated detector, dashboard, and model outputs
+outputs/
+outputs_*/
+**/outputs/
+**/outputs_*/
+*.log
+*.err.log
+
+# Local database state and secrets
+*.db
+*.sqlite
+*.sqlite3
+.env
+**/.env
+
+# Keep source files and documentation tracked.
