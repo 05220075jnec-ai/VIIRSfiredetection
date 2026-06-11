@@ -1,5 +1,29 @@
 from __future__ import annotations
 
+"""
+Bhutan VIIRS hotspot detector.
+
+This script does not use NASA FIRMS CSV detections as input. It downloads or
+reuses raw VIIRS swath products:
+
+1. VNP02MOD: calibrated VIIRS moderate-resolution radiance data.
+2. VNP03MOD: matching latitude/longitude geolocation data.
+
+For each matched satellite pass, the script:
+
+1. Reads the M13 thermal infrared band from VNP02MOD.
+2. Reads latitude/longitude arrays from VNP03MOD.
+3. Keeps only pixels inside the Bhutan boundary or a requested dzongkhag.
+4. Removes invalid/saturated radiance values.
+5. Converts M13 radiance to log scale.
+6. Marks the hottest tail of valid Bhutan pixels as hotspot candidates.
+7. Exports point outputs and cluster polygons.
+
+The detector is intentionally simple and transparent. It is a localized
+thermal-anomaly detector, not a full replacement for the official NASA fire
+algorithm.
+"""
+
 import argparse
 import os
 import re
@@ -23,6 +47,7 @@ GRANULE_TOKEN = re.compile(r"\.A(\d{7})\.(\d{4})\.")
 
 
 def configure_earthdata_netrc() -> None:
+    """Point earthaccess to project-local Earthdata credentials if available."""
     for name in ("netrc", ".netrc", "_netrc"):
         local_netrc = PROJECT_ROOT / name
         if local_netrc.exists():
@@ -31,7 +56,7 @@ def configure_earthdata_netrc() -> None:
 
 
 def granule_key(text: str) -> str:
-    # Convert a filename or URL into a comparable timestamp key.
+    """Convert a filename or URL into a comparable timestamp key."""
     match = GRANULE_TOKEN.search(text)
     if not match:
         raise ValueError(f"Could not find AYYYYDDD.HHMM token in {text}")
@@ -39,6 +64,7 @@ def granule_key(text: str) -> str:
 
 
 def granule_key_from_result(granule) -> str:
+    """Extract the VIIRS timestamp key from an Earthdata/CMR search result."""
     # CMR/LAADS sometimes returns only an ID like LAADS:7504476952 in GranuleUR.
     # The real filename is usually in the data download link, so we check both
     # metadata fields and download links.
@@ -67,6 +93,7 @@ def load_bhutan_boundary(
     boundary_path: Path,
     district: str | None,
 ) -> tuple[gpd.GeoDataFrame, object, tuple[float, float, float, float]]:
+    """Load Bhutan boundaries and return the exact clip polygon plus search bbox."""
     # Read the Bhutan dzongkhag boundary file. NASA search still needs a bbox,
     # but detection uses the exact dissolved country polygon.
     boundary = gpd.read_file(boundary_path)
@@ -99,6 +126,7 @@ def search_viirs_pairs(
     bbox: tuple[float, float, float, float],
     max_granules: int,
 ):
+    """Search Earthdata for VNP02MOD/VNP03MOD files that share the same timestamp."""
     # Search NASA Earthdata for both the calibrated radiance file (VNP02MOD)
     # and the matching geolocation file (VNP03MOD).
     searches = {}
@@ -125,6 +153,7 @@ def search_viirs_pairs(
 
 
 def download_pair(key: str, vnp02, vnp03, data_dir: Path) -> tuple[str, Path, Path]:
+    """Download a matched radiance/geolocation pair and return local paths."""
     # Download one matched pair into a local data folder.
     # earthaccess reuses existing files when possible.
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +167,7 @@ def download_pair(key: str, vnp02, vnp03, data_dir: Path) -> tuple[str, Path, Pa
 
 
 def local_pairs(data_dir: Path) -> list[tuple[str, Path, Path]]:
+    """Find already downloaded VNP02MOD/VNP03MOD pairs in the data folder."""
     # Reuse already downloaded files. This is useful after a long download run
     # times out before the processing/export step completes.
     vnp02 = {granule_key(path.name): path for path in data_dir.glob("VNP02MOD*.nc")}
@@ -154,23 +184,29 @@ def detect_hotspots_for_pair(
     bhutan_polygon,
     percentile: float,
 ) -> gpd.GeoDataFrame:
+    """Detect hotspot candidate pixels for one VIIRS overpass."""
     # Open the two VIIRS NetCDF groups used by the notebook:
     # VNP02MOD has M13 radiance, and VNP03MOD has latitude/longitude.
     obs = xr.open_dataset(vnp02_path, group="/observation_data")
     geo = xr.open_dataset(vnp03_path, group="/geolocation_data")
 
-    # Pull the arrays into NumPy for simple thresholding.
+    # Pull the arrays into NumPy for thresholding. Every element in these arrays
+    # represents one VIIRS swath pixel. The arrays are aligned, so m13[i, j],
+    # lat[i, j], and lon[i, j] describe the same ground pixel.
     m13 = obs.M13.values.astype("float64")
     lat = geo.latitude.values.astype("float64")
     lon = geo.longitude.values.astype("float64")
 
-    # First apply a cheap rectangular boundary filter, then the exact Bhutan
-    # polygon from bhutan_dzong_web.geojson. This removes points falling in India.
+    # First apply a cheap rectangular boundary filter. This removes most pixels
+    # outside the area of interest before the more expensive point-in-polygon
+    # test. The exact Bhutan polygon check happens next.
     lon_min, lat_min, lon_max, lat_max = bbox
     valid = (
         np.isfinite(m13)
         & np.isfinite(lat)
         & np.isfinite(lon)
+        # M13 radiance should be positive. Extremely large values are usually
+        # invalid/saturated for this simple demo detector, so they are excluded.
         & (m13 > 0)
         & (m13 < 100)
         & (lon >= lon_min)
@@ -182,6 +218,8 @@ def detect_hotspots_for_pair(
     if not valid.any():
         return gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs="EPSG:4326"), crs="EPSG:4326")
 
+    # Use the actual Bhutan/dzongkhag polygon, not just the rectangle. This is
+    # why the output follows Bhutan's boundary instead of becoming a big box.
     inside_bhutan = np.zeros(m13.shape, dtype=bool)
     inside_bhutan[valid] = contains_xy(bhutan_polygon, lon[valid], lat[valid])
     valid &= inside_bhutan
@@ -189,8 +227,17 @@ def detect_hotspots_for_pair(
     if not valid.any():
         return gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs="EPSG:4326"), crs="EPSG:4326")
 
-    # Match the notebook's core idea:
-    # transform M13 to log scale and detect the bright/hot tail with a threshold.
+    # Core fire/anomaly test:
+    #
+    # M13 is a thermal infrared band. Hot/fire-like pixels tend to have higher
+    # M13 radiance than their local/background surroundings. We use log(M13) so
+    # the threshold is less dominated by a few very large radiance values.
+    #
+    # threshold = percentile(log(M13 values inside Bhutan))
+    # hot pixel = log(M13 pixel) >= threshold
+    #
+    # With the default percentile=99.9, only the hottest 0.1% of valid Bhutan
+    # pixels in that granule become hotspot candidates.
     log_m13 = np.full(m13.shape, np.nan, dtype="float64")
     log_m13[valid] = np.log(m13[valid])
     threshold = np.nanpercentile(log_m13[valid], percentile)
@@ -199,7 +246,9 @@ def detect_hotspots_for_pair(
     if not hot.any():
         return gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs="EPSG:4326"), crs="EPSG:4326")
 
-    # Convert hotspot pixels into a QGIS-ready point dataset.
+    # Convert hotspot pixels into a QGIS/dashboard-ready point dataset. The
+    # output keeps both the measured value and threshold so users can inspect
+    # why a pixel was classified as a hotspot candidate.
     df = pd.DataFrame(
         {
             "longitude": lon[hot],
@@ -220,6 +269,7 @@ def detect_hotspots_for_pair(
 
 
 def add_dzongkhag_names(hotspots: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Spatially join each hotspot point to its Bhutan dzongkhag polygon."""
     # Attach dzongkhag names to each point so Mongar detections are easy to find.
     if hotspots.empty or "Dzongkhag" not in boundary.columns:
         return hotspots
@@ -234,6 +284,7 @@ def add_dzongkhag_names(hotspots: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame) 
 
 
 def build_cluster_polygons(hotspots: gpd.GeoDataFrame, out_dir: Path) -> gpd.GeoDataFrame:
+    """Create one convex hull polygon for each DBSCAN hotspot cluster."""
     # Reproduce the notebook's vector cluster step:
     # group DBSCAN-labeled hotspot points and create one convex hull per cluster.
     cluster_rows = []
@@ -283,6 +334,7 @@ def export_outputs(
     cluster_eps: float,
     min_samples: int,
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """Write hotspot points and cluster polygons to CSV, GeoJSON, and Shapefile."""
     # Create the output folder before writing CSV, GeoJSON, or shapefiles.
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -290,6 +342,8 @@ def export_outputs(
         raise RuntimeError("No hotspot pixels were found inside the Bhutan boundary.")
 
     # Add dzongkhag names, then cluster all hotspot points from all granules.
+    # DBSCAN groups nearby points without needing to know the number of clusters
+    # in advance. Points that do not belong to a cluster receive label -1.
     hotspots = add_dzongkhag_names(hotspots, boundary)
     coords = hotspots[["longitude", "latitude"]].to_numpy()
     hotspots["cluster"] = DBSCAN(eps=cluster_eps, min_samples=min_samples).fit_predict(coords)
@@ -305,6 +359,7 @@ def export_outputs(
 
 
 def main() -> None:
+    """Run the complete command-line workflow."""
     # Command-line settings let you run this workflow from VS Code/PowerShell
     # without opening the notebook.
     parser = argparse.ArgumentParser(
@@ -362,6 +417,8 @@ def main() -> None:
         if not gdf.empty:
             hotspot_layers.append(gdf)
 
+    # Combine detections from all overpasses into one dataset before adding
+    # dzongkhag names and DBSCAN clusters.
     if hotspot_layers:
         all_hotspots = gpd.GeoDataFrame(
             pd.concat(hotspot_layers, ignore_index=True),
