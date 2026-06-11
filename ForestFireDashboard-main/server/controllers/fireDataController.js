@@ -5,8 +5,10 @@ const { Op } = require('sequelize');
 const moment = require('moment');
 
 const SOURCE_VERSION_FILTERS = {
+  viirs: ['BHUTAN_TRUE_I_BAND', 'BHUTAN_TRUE_I_BAND_NRT'],
   true_i_band: ['BHUTAN_TRUE_I_BAND'],
   live_nrt: ['BHUTAN_TRUE_I_BAND_NRT'],
+  modis: ['BHUTAN_MODIS_CONTEXTUAL_V1'],
   legacy_custom: ['CUSTOM_VIIRS'],
   dashboard_viirs: ['BHUTAN_TRUE_I_BAND', 'BHUTAN_TRUE_I_BAND_NRT'],
 };

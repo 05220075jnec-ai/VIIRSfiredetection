@@ -38,7 +38,7 @@ export async function fetchFireData(date = null, days = 0) {
   return response.json();
 }
 
-export async function fetchFireDataRange(start, end, source = 'true_i_band') {
+export async function fetchFireDataRange(start, end, source = 'viirs') {
   const params = new URLSearchParams({ start, end, source });
   const response = await fetch(`${API_BASE_URL}/api/fire-data?${params.toString()}`);
   if (!response.ok) {
@@ -56,7 +56,7 @@ export async function fetchPipelineStatus() {
   return result;
 }
 
-export async function fetchHottestMonth(source = 'true_i_band') {
+export async function fetchHottestMonth(source = 'viirs') {
   const params = new URLSearchParams({ source });
   const response = await fetch(`${API_BASE_URL}/api/fire-data/hottest-month?${params.toString()}`);
   if (!response.ok) {

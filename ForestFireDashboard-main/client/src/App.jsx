@@ -16,7 +16,8 @@ const DZONGKHAGS = [
 const REFRESH_SECONDS = 60;
 
 const DATA_SOURCES = [
-  { value: 'true_i_band', label: 'VIIRS Detection (3 satellites)' },
+  { value: 'viirs', label: 'VIIRS' },
+  { value: 'modis', label: 'MODIS' },
   { value: 'live_nrt', label: 'Live NRT automation (recent)' },
 ];
 
@@ -53,7 +54,7 @@ function App() {
   const [hottestMonth, setHottestMonth] = useState(null);
   const [pipeline, setPipeline] = useState(null);
   const [refreshIn, setRefreshIn] = useState(REFRESH_SECONDS);
-  const [dataSource, setDataSource] = useState('true_i_band');
+  const [dataSource, setDataSource] = useState('viirs');
 
   useEffect(() => {
     loadFireData();
@@ -77,13 +78,15 @@ function App() {
     }, 1000);
 
     return () => clearInterval(tick);
-  }, [startDate, endDate]);
+  }, [startDate, endDate, dataSource]);
 
   const loadHottestMonth = async () => {
     try {
       const result = await fetchHottestMonth(dataSource);
       if (result.success && result.month) {
         setHottestMonth(formatHottestMonth(result.month, result.count));
+      } else {
+        setHottestMonth(null);
       }
     } catch (err) {
       console.error('Failed to load hottest month:', err);
@@ -143,7 +146,6 @@ function App() {
 
   const useHistoricalDate = (setter) => (date) => {
     if (!date) return;
-    setDataSource('true_i_band');
     setSelectedDzongkhag(null);
     setter(date);
   };
@@ -274,7 +276,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>Data source: true VIIRS I-band history and 15-minute NRT VIIRS automation in PostgreSQL</p>
+        <p>Data sources: VIIRS and MODIS detections stored in PostgreSQL</p>
         <p>Choose a start and end date to fetch saved detections</p>
       </footer>
     </div>

@@ -44,6 +44,7 @@ const bhutanCenter = [
 
 const FIRE_CONTEXT_STYLES = {
   forest_fire: { color: '#ef4444', label: 'Forest fire' },
+  agricultural_fire: { color: '#f97316', label: 'Agricultural fire' },
   agricultural_burning: { color: '#f97316', label: 'Agricultural burning' },
   vegetation_fire: { color: '#ef4444', label: 'Vegetation fire' },
   structure_fire_candidate: { color: '#a855f7', label: 'Structure fire candidate' },
@@ -579,7 +580,7 @@ function FireMap({ fireData, riskStart, riskEnd, selectedDzongkhag, onDzongkhagC
             <p><strong>Date:</strong> {popupContent.date}</p>
             <p><strong>Time:</strong> {popupContent.time}</p>
             <p><strong>Brightness:</strong> {Number(popupContent.brightness).toFixed(1)} K</p>
-            <p><strong>M13 anomaly:</strong> {Number(popupContent.frp).toFixed(2)}</p>
+            <p><strong>Thermal anomaly:</strong> {Number(popupContent.frp).toFixed(2)}</p>
             <p><strong>Confidence:</strong> {popupContent.confidence}%</p>
             <p><strong>Intensity:</strong> {popupContent.intensity}</p>
             <p><strong>Satellite:</strong> {popupContent.satellite} ({popupContent.instrument})</p>
