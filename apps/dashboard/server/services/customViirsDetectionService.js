@@ -4,7 +4,7 @@ const { spawn } = require('child_process');
 const moment = require('moment');
 
 const VIIRS_ROOT = path.resolve(__dirname, '../../../..');
-const SCRIPT_PATH = path.join(VIIRS_ROOT, 'pipelines', 'fetch_and_detect_bhutan_viirs.py');
+const SCRIPT_PATH = path.join(VIIRS_ROOT, 'notebooks', 'reference', 'fetch_and_detect_bhutan_viirs.py');
 const OUTPUT_ROOT = path.join(VIIRS_ROOT, 'outputs', 'dashboard_viirs_queries');
 const NRT_OUTPUT_DIR = path.join(VIIRS_ROOT, 'outputs', 'viirs_nrt');
 const TRUE_NRT_VERSION = 'BHUTAN_TRUE_I_BAND_NRT';
@@ -243,8 +243,8 @@ function getPipelineStatus() {
   const expectedIntervalMinutes = 15;
 
   let status = 'not_started';
-  if (heartbeatAgeMinutes !== null && heartbeatAgeMinutes <= 2 && heartbeat?.status !== 'error') {
-    status = 'active';
+  if (heartbeatAgeMinutes !== null && heartbeatAgeMinutes <= 2) {
+    status = heartbeat?.status === 'error' ? 'error' : 'active';
   } else if (latestMtime) {
     status = ageMinutes <= expectedIntervalMinutes * 3 ? 'active' : 'stale';
   }

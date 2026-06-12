@@ -1,6 +1,7 @@
 const { FireData } = require('../models/FireData');
 const nasaFirmsService = require('../services/nasaFirmsService');
 const { getPipelineStatus, runViirsDetection } = require('../services/customViirsDetectionService');
+const { getModisPipelineStatus } = require('../services/modisDetectionService');
 const { Op } = require('sequelize');
 const moment = require('moment');
 
@@ -76,9 +77,14 @@ function parseConfidence(confidence) {
 class FireDataController {
   async getPipelineStatus(req, res) {
     try {
+      const viirs = getPipelineStatus();
       res.json({
         success: true,
-        pipeline: getPipelineStatus(),
+        pipeline: {
+          ...viirs,
+          viirs,
+          modis: getModisPipelineStatus(),
+        },
       });
     } catch (error) {
       console.error('Error reading pipeline status:', error);

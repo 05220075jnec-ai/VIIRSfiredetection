@@ -9,9 +9,9 @@ other context layers are stored under `data/reference`. Processed granule keys
 are stored in `outputs/viirs_nrt/processed_granules.json`, preventing the same
 granule from being processed repeatedly.
 
-Historical VIIRS processing is orchestrated by
-`pipelines/fetch_and_detect_bhutan_viirs.py`. MODIS Terra/Aqua HDF pairs are
-read from `data/raw/modis/hdf`.
+The older experimental VIIRS fetch-and-detect workflow is retained at
+`notebooks/reference/fetch_and_detect_bhutan_viirs.py` for methodology
+reference. MODIS Terra/Aqua HDF pairs are read from `data/raw/modis/hdf`.
 
 ## 2. Detection Algorithms
 

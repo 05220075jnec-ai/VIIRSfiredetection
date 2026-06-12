@@ -1,7 +1,9 @@
 const fs = require('fs');
 const moment = require('moment');
+const path = require('path');
 
 const MODIS_VERSION = 'BHUTAN_MODIS_CONTEXTUAL_V1';
+const MODIS_NRT_OUTPUT_DIR = path.resolve(__dirname, '../../../../outputs/modis_nrt');
 
 function parseCsvLine(line) {
   const values = [];
@@ -103,7 +105,71 @@ function parseModisHotspotCsv(csvPath) {
     ));
 }
 
+function readJsonFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    return null;
+  }
+}
+
+function getLatestMtime(paths) {
+  const times = paths
+    .filter((filePath) => fs.existsSync(filePath))
+    .map((filePath) => fs.statSync(filePath).mtime);
+  if (times.length === 0) {
+    return null;
+  }
+  return new Date(Math.max(...times.map((time) => time.getTime())));
+}
+
+function getProcessedGranuleCount(stateFile) {
+  const state = readJsonFile(stateFile);
+  return Array.isArray(state?.processed) ? state.processed.length : 0;
+}
+
+function getModisPipelineStatus() {
+  const hotspotsCsv = path.join(MODIS_NRT_OUTPUT_DIR, 'modis_hotspot.csv');
+  const hotspotsGeoJson = path.join(MODIS_NRT_OUTPUT_DIR, 'modis_hotspot.geojson');
+  const stateFile = path.join(MODIS_NRT_OUTPUT_DIR, 'processed_granules.json');
+  const heartbeat = readJsonFile(path.join(MODIS_NRT_OUTPUT_DIR, 'pipeline_status.json'));
+  const latestMtime = getLatestMtime([hotspotsCsv, hotspotsGeoJson, stateFile]);
+  const now = new Date();
+  const ageMinutes = latestMtime ? Math.round((now.getTime() - latestMtime.getTime()) / 60000) : null;
+  const heartbeatTime = heartbeat?.updated_utc ? new Date(heartbeat.updated_utc) : null;
+  const heartbeatAgeMinutes = heartbeatTime && !Number.isNaN(heartbeatTime.getTime())
+    ? Math.round((now.getTime() - heartbeatTime.getTime()) / 60000)
+    : null;
+  const expectedIntervalMinutes = 15;
+
+  let status = 'not_started';
+  if (heartbeatAgeMinutes !== null && heartbeatAgeMinutes <= 2) {
+    status = heartbeat?.status === 'error' ? 'error' : 'active';
+  } else if (latestMtime) {
+    status = ageMinutes <= expectedIntervalMinutes * 3 ? 'active' : 'stale';
+  }
+
+  return {
+    status,
+    phase: heartbeat?.phase || null,
+    statusMessage: heartbeat?.message || null,
+    heartbeatUtc: heartbeatTime ? heartbeatTime.toISOString() : null,
+    workerPid: heartbeat?.worker_pid || null,
+    currentCycle: heartbeat?.cycle_id || null,
+    expectedIntervalMinutes,
+    latestOutputUtc: latestMtime ? latestMtime.toISOString() : null,
+    ageMinutes,
+    nrtHotspotRows: readCsvRows(hotspotsCsv).length,
+    processedGranuleCount: getProcessedGranuleCount(stateFile),
+    outputFolder: MODIS_NRT_OUTPUT_DIR,
+  };
+}
+
 module.exports = {
   MODIS_VERSION,
+  getModisPipelineStatus,
   parseModisHotspotCsv,
 };

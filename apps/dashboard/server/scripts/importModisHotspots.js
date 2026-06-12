@@ -6,7 +6,10 @@ const { MODIS_VERSION, parseModisHotspotCsv } = require('../services/modisDetect
 
 async function main() {
   const defaultCsv = path.resolve(__dirname, '../../../../outputs/modis_detector_test/modis_hotspot.csv');
-  const csvPath = process.argv[2] ? path.resolve(process.argv[2]) : defaultCsv;
+  const arguments = process.argv.slice(2);
+  const replaceAll = arguments.includes('--replace-all');
+  const csvArgument = arguments.find((argument) => !argument.startsWith('--'));
+  const csvPath = csvArgument ? path.resolve(csvArgument) : defaultCsv;
 
   try {
     await sequelize.authenticate();
@@ -19,10 +22,12 @@ async function main() {
     }
 
     const imported = await sequelize.transaction(async (transaction) => {
-      await FireData.destroy({
-        where: { version: MODIS_VERSION },
-        transaction,
-      });
+      if (replaceAll) {
+        await FireData.destroy({
+          where: { version: MODIS_VERSION },
+          transaction,
+        });
+      }
       return FireData.bulkCreate(records, {
         ignoreDuplicates: true,
         transaction,
@@ -30,6 +35,7 @@ async function main() {
     });
 
     console.log(`MODIS hotspot CSV: ${csvPath}`);
+    console.log(`Import mode: ${replaceAll ? 'replace all MODIS rows' : 'incremental'}`);
     console.log(`Rows read: ${records.length}`);
     console.log(`Rows inserted: ${imported.length}`);
     process.exit(0);

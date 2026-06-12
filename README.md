@@ -64,10 +64,10 @@ The Compose file uses the existing persistent Docker volume
 
 ## Run VIIRS Detection
 
-Historical workflow:
+Legacy reference workflow:
 
 ```powershell
-python pipelines\fetch_and_detect_bhutan_viirs.py `
+python notebooks\reference\fetch_and_detect_bhutan_viirs.py `
   --start 2023-04-08 `
   --end 2023-04-17 `
   --local-only

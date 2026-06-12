@@ -36,6 +36,7 @@ function formatPipelineTime(value) {
 function pipelineStatusLabel(status, phase) {
   const labels = {
     active: 'Active',
+    error: 'Error',
     stale: 'Stale',
     not_started: 'Not started',
   };
@@ -65,6 +66,8 @@ function App() {
   const [pipeline, setPipeline] = useState(null);
   const [refreshIn, setRefreshIn] = useState(REFRESH_SECONDS);
   const [dataSource, setDataSource] = useState('viirs');
+  const viirsPipeline = pipeline?.viirs || pipeline;
+  const modisPipeline = pipeline?.modis;
 
   useEffect(() => {
     loadFireData();
@@ -249,20 +252,30 @@ function App() {
 
       <section className="pipeline-status" aria-label="Automation pipeline status">
         <div className="pipeline-item pipeline-main">
-          <span className={`pipeline-dot ${pipeline?.status || 'not_started'}`} />
-          <span>NRT automation: <strong>{pipelineStatusLabel(pipeline?.status, pipeline?.phase)}</strong></span>
+          <span className={`pipeline-dot ${viirsPipeline?.status || 'not_started'}`} />
+          <span>VIIRS automation: <strong>{pipelineStatusLabel(viirsPipeline?.status, viirsPipeline?.phase)}</strong></span>
         </div>
         <div className="pipeline-item">
-          Last output: <strong>{formatPipelineTime(pipeline?.latestOutputUtc)}</strong>
+          VIIRS output: <strong>{formatPipelineTime(viirsPipeline?.latestOutputUtc)}</strong>
         </div>
         <div className="pipeline-item">
-          Latest NRT hotspots: <strong>{pipeline?.nrtHotspotRows ?? 0}</strong>
+          VIIRS hotspots: <strong>{viirsPipeline?.nrtHotspotRows ?? 0}</strong>
         </div>
         <div className="pipeline-item">
-          Clusters: <strong>{pipeline?.nrtClusterCount ?? 0}</strong>
+          VIIRS granules: <strong>{viirsPipeline?.processedGranuleCount ?? 0}</strong>
+        </div>
+        <div className="pipeline-item pipeline-main">
+          <span className={`pipeline-dot ${modisPipeline?.status || 'not_started'}`} />
+          <span>MODIS automation: <strong>{pipelineStatusLabel(modisPipeline?.status, modisPipeline?.phase)}</strong></span>
         </div>
         <div className="pipeline-item">
-          Processed granules: <strong>{pipeline?.processedGranuleCount ?? 0}</strong>
+          MODIS output: <strong>{formatPipelineTime(modisPipeline?.latestOutputUtc)}</strong>
+        </div>
+        <div className="pipeline-item">
+          MODIS hotspots: <strong>{modisPipeline?.nrtHotspotRows ?? 0}</strong>
+        </div>
+        <div className="pipeline-item">
+          MODIS granules: <strong>{modisPipeline?.processedGranuleCount ?? 0}</strong>
         </div>
         <div className="pipeline-item">
           Dashboard refresh: <strong>{refreshIn}s</strong>

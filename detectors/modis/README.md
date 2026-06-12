@@ -44,3 +44,28 @@ C:\Users\Public\miniforge3\Scripts\conda.exe run -n bhutan-fire-detection python
 ```
 
 Outputs are written to `outputs/modis_detector_test` by default.
+
+## Near-real-time automation
+
+The production worker uses NASA Earthdata Collection `6.1NRT` HDF4 pairs:
+
+- Terra: `MOD021KM` + `MOD03`
+- Aqua: `MYD021KM` + `MYD03`
+
+Run one cycle:
+
+```powershell
+C:\Users\Public\miniforge3\envs\bhutan-fire-detection\python.exe pipelines\auto_modis_nrt_fire_detection.py --once --dashboard-import
+```
+
+The normal dashboard launcher starts the worker every 15 minutes:
+
+```powershell
+.\start_dashboard.ps1
+```
+
+Each cycle searches the latest 24-hour window, skips granules listed in
+`outputs/modis_nrt/processed_granules.json`, detects new pairs, incrementally
+inserts hotspots into PostgreSQL, and deletes the temporary raw HDF files only
+after the cycle finishes. Status is written to
+`outputs/modis_nrt/pipeline_status.json`.
