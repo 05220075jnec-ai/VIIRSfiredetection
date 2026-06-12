@@ -3,9 +3,73 @@ $ErrorActionPreference = "Stop"
 $workspace = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dashboard = Join-Path $workspace "apps\dashboard"
 $logDirectory = Join-Path $workspace "outputs\logs"
+$viirsLogDirectory = Join-Path $logDirectory "viirs"
+$modisLogDirectory = Join-Path $logDirectory "modis"
+$serviceLogDirectory = Join-Path $logDirectory "services"
 $condaEnvironment = "bhutan-fire-detection"
+$logRetentionDays = if ($env:BHUTAN_FIRE_LOG_RETENTION_DAYS) {
+    [int]$env:BHUTAN_FIRE_LOG_RETENTION_DAYS
+}
+else {
+    30
+}
+$logSessionStamp = Get-Date -Format "yyyyMMdd_HHmmss"
 
-New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+New-Item -ItemType Directory -Path $viirsLogDirectory -Force | Out-Null
+New-Item -ItemType Directory -Path $modisLogDirectory -Force | Out-Null
+New-Item -ItemType Directory -Path $serviceLogDirectory -Force | Out-Null
+
+function Remove-ExpiredLogs {
+    param(
+        [string]$RootDirectory,
+        [int]$RetentionDays
+    )
+
+    if ($RetentionDays -lt 1) {
+        throw "BHUTAN_FIRE_LOG_RETENTION_DAYS must be at least 1."
+    }
+
+    $resolvedLogRoot = [IO.Path]::GetFullPath($logDirectory)
+    $resolvedRoot = [IO.Path]::GetFullPath($RootDirectory)
+    if (
+        $resolvedRoot -ne $resolvedLogRoot -and
+        -not $resolvedRoot.StartsWith(
+            $resolvedLogRoot + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw "Refusing to clean logs outside $resolvedLogRoot."
+    }
+
+    $cutoff = (Get-Date).AddDays(-$RetentionDays)
+    Get-ChildItem -LiteralPath $resolvedRoot -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq "archive" } |
+        ForEach-Object {
+            Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -lt $cutoff } |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+        }
+}
+
+function Archive-CurrentLog {
+    param(
+        [string]$Directory,
+        [string]$LogName
+    )
+
+    $archiveDirectory = Join-Path $Directory "archive"
+    New-Item -ItemType Directory -Path $archiveDirectory -Force | Out-Null
+
+    foreach ($suffix in @(".log", ".err.log")) {
+        $currentPath = Join-Path $Directory "$LogName$suffix"
+        if (Test-Path -LiteralPath $currentPath) {
+            $archivePath = Join-Path $archiveDirectory "$($LogName)_$logSessionStamp$suffix"
+            Move-Item -LiteralPath $currentPath -Destination $archivePath -Force
+        }
+    }
+}
+
+Remove-ExpiredLogs -RootDirectory $logDirectory -RetentionDays $logRetentionDays
 
 function Test-Port {
     param([int]$Port)
@@ -30,6 +94,7 @@ function Start-DashboardProcess {
         [string]$FilePath,
         [string[]]$ArgumentList,
         [string]$WorkingDirectory,
+        [string]$ProcessLogDirectory,
         [string]$LogName
     )
 
@@ -38,12 +103,14 @@ function Start-DashboardProcess {
         return
     }
 
+    Archive-CurrentLog -Directory $ProcessLogDirectory -LogName $LogName
+
     Start-Process `
         -FilePath $FilePath `
         -ArgumentList $ArgumentList `
         -WorkingDirectory $WorkingDirectory `
-        -RedirectStandardOutput (Join-Path $logDirectory "$LogName.log") `
-        -RedirectStandardError (Join-Path $logDirectory "$LogName.err.log") `
+        -RedirectStandardOutput (Join-Path $ProcessLogDirectory "$LogName.log") `
+        -RedirectStandardError (Join-Path $ProcessLogDirectory "$LogName.err.log") `
         -WindowStyle Hidden | Out-Null
 
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
@@ -54,7 +121,7 @@ function Start-DashboardProcess {
         }
     }
 
-    throw "$Name did not start. Check outputs\$LogName.err.log."
+    throw "$Name did not start. Check $ProcessLogDirectory\$LogName.err.log."
 }
 
 function Start-NrtAutomation {
@@ -71,6 +138,8 @@ function Start-NrtAutomation {
         Remove-Item -LiteralPath $pidFile -Force
     }
 
+    Archive-CurrentLog -Directory $viirsLogDirectory -LogName "viirs_realtime"
+
     $process = Start-Process `
         -FilePath $PythonPath `
         -ArgumentList @(
@@ -81,14 +150,14 @@ function Start-NrtAutomation {
             "--dashboard-import"
         ) `
         -WorkingDirectory $workspace `
-        -RedirectStandardOutput (Join-Path $logDirectory "viirs_realtime.log") `
-        -RedirectStandardError (Join-Path $logDirectory "viirs_realtime.err.log") `
+        -RedirectStandardOutput (Join-Path $viirsLogDirectory "viirs_realtime.log") `
+        -RedirectStandardError (Join-Path $viirsLogDirectory "viirs_realtime.err.log") `
         -WindowStyle Hidden `
         -PassThru
 
     Start-Sleep -Seconds 2
     if ($process.HasExited) {
-        throw "VIIRS NRT automation did not start. Check outputs\logs\viirs_realtime.err.log."
+        throw "VIIRS NRT automation did not start. Check outputs\logs\viirs\viirs_realtime.err.log."
     }
     Write-Host "VIIRS NRT automation started as process $($process.Id)."
 }
@@ -107,6 +176,8 @@ function Start-ModisNrtAutomation {
         Remove-Item -LiteralPath $pidFile -Force
     }
 
+    Archive-CurrentLog -Directory $modisLogDirectory -LogName "modis_realtime"
+
     $process = Start-Process `
         -FilePath $PythonPath `
         -ArgumentList @(
@@ -117,14 +188,14 @@ function Start-ModisNrtAutomation {
             "--dashboard-import"
         ) `
         -WorkingDirectory $workspace `
-        -RedirectStandardOutput (Join-Path $logDirectory "modis_realtime.log") `
-        -RedirectStandardError (Join-Path $logDirectory "modis_realtime.err.log") `
+        -RedirectStandardOutput (Join-Path $modisLogDirectory "modis_realtime.log") `
+        -RedirectStandardError (Join-Path $modisLogDirectory "modis_realtime.err.log") `
         -WindowStyle Hidden `
         -PassThru
 
     Start-Sleep -Seconds 2
     if ($process.HasExited) {
-        throw "MODIS NRT automation did not start. Check outputs\logs\modis_realtime.err.log."
+        throw "MODIS NRT automation did not start. Check outputs\logs\modis\modis_realtime.err.log."
     }
     Write-Host "MODIS NRT automation started as process $($process.Id)."
 }
@@ -192,6 +263,7 @@ Start-DashboardProcess `
     -FilePath $npm `
     -ArgumentList @("start") `
     -WorkingDirectory (Join-Path $dashboard "server") `
+    -ProcessLogDirectory $serviceLogDirectory `
     -LogName "dashboard_server"
 
 Start-DashboardProcess `
@@ -200,6 +272,7 @@ Start-DashboardProcess `
     -FilePath $python `
     -ArgumentList @("app.py") `
     -WorkingDirectory (Join-Path $workspace "services\prediction") `
+    -ProcessLogDirectory $serviceLogDirectory `
     -LogName "prediction_server"
 
 Start-DashboardProcess `
@@ -208,6 +281,7 @@ Start-DashboardProcess `
     -FilePath $python `
     -ArgumentList @("app.py") `
     -WorkingDirectory (Join-Path $workspace "services\burn_severity") `
+    -ProcessLogDirectory $serviceLogDirectory `
     -LogName "burn_severity_server"
 
 Start-DashboardProcess `
@@ -216,6 +290,7 @@ Start-DashboardProcess `
     -FilePath $npm `
     -ArgumentList @("run", "dev", "--", "--host", "127.0.0.1") `
     -WorkingDirectory (Join-Path $dashboard "client") `
+    -ProcessLogDirectory $serviceLogDirectory `
     -LogName "dashboard_client"
 
 Start-NrtAutomation -PythonPath $python

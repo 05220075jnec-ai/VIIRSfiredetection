@@ -323,9 +323,7 @@ def import_outputs_to_dashboard(
     return True
 
 
-def cleanup_cycle_directory(cycle_data_dir: Path, data_root: Path, keep_raw: bool) -> None:
-    if keep_raw or not cycle_data_dir.exists():
-        return
+def validated_cycle_path(cycle_data_dir: Path, data_root: Path) -> tuple[Path, Path]:
     resolved_cycle = cycle_data_dir.resolve()
     resolved_root = data_root.resolve()
     if resolved_cycle == resolved_root:
@@ -334,17 +332,86 @@ def cleanup_cycle_directory(cycle_data_dir: Path, data_root: Path, keep_raw: boo
         resolved_cycle.relative_to(resolved_root)
     except ValueError as exc:
         raise RuntimeError(f"Refusing to remove raw data outside {resolved_root}.") from exc
-    shutil.rmtree(resolved_cycle)
-    print(f"Removed transient raw VIIRS files: {resolved_cycle}", flush=True)
+    return resolved_cycle, resolved_root
 
 
-def cleanup_orphaned_cycle_directories(data_root: Path, keep_raw: bool) -> None:
-    """Remove timestamped NRT work folders left by a killed worker."""
+def satellite_files(cycle_data_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in cycle_data_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".nc"
+    ]
+
+
+def retain_cycle_directory(
+    cycle_data_dir: Path,
+    data_root: Path,
+    keep_raw: bool,
+    retention_hours: float,
+) -> None:
+    if not cycle_data_dir.exists():
+        return
+    resolved_cycle, _ = validated_cycle_path(cycle_data_dir, data_root)
+    if not satellite_files(resolved_cycle):
+        shutil.rmtree(resolved_cycle)
+        print(f"Removed empty VIIRS cycle folder: {resolved_cycle}", flush=True)
+        return
+    if keep_raw:
+        print(f"Keeping raw VIIRS files indefinitely: {resolved_cycle}", flush=True)
+        return
+
+    delete_after = datetime.now(timezone.utc) + timedelta(hours=retention_hours)
+    marker_path = resolved_cycle / ".retention.json"
+    marker_path.write_text(
+        json.dumps({"delete_after_utc": delete_after.isoformat()}, indent=2),
+        encoding="utf-8",
+    )
+    print(
+        f"Keeping raw VIIRS files until {delete_after.isoformat()}: {resolved_cycle}",
+        flush=True,
+    )
+
+
+def cleanup_expired_cycle_directories(
+    data_root: Path,
+    keep_raw: bool,
+    retention_hours: float,
+) -> None:
     if keep_raw or not data_root.exists():
         return
+    now = datetime.now(timezone.utc)
     for path in data_root.iterdir():
-        if path.is_dir() and CYCLE_DIRECTORY_TOKEN.fullmatch(path.name):
-            cleanup_cycle_directory(path, data_root, keep_raw=False)
+        marker_path = path / ".retention.json"
+        is_timestamped_cycle = bool(CYCLE_DIRECTORY_TOKEN.fullmatch(path.name))
+        if not path.is_dir() or (not is_timestamped_cycle and not marker_path.exists()):
+            continue
+        resolved_cycle, _ = validated_cycle_path(path, data_root)
+        if not satellite_files(resolved_cycle):
+            shutil.rmtree(resolved_cycle)
+            print(f"Removed empty VIIRS cycle folder: {resolved_cycle}", flush=True)
+            continue
+
+        delete_after = None
+        if marker_path.exists():
+            try:
+                payload = json.loads(marker_path.read_text(encoding="utf-8"))
+                delete_after = pd.to_datetime(
+                    payload.get("delete_after_utc"),
+                    utc=True,
+                ).to_pydatetime()
+            except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                delete_after = None
+        if delete_after is None:
+            if not is_timestamped_cycle:
+                continue
+            cycle_time = datetime.strptime(path.name, "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            delete_after = cycle_time + timedelta(hours=retention_hours)
+
+        if now >= delete_after:
+            shutil.rmtree(resolved_cycle)
+            print(f"Removed expired raw VIIRS files: {resolved_cycle}", flush=True)
 
 
 def cycle_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
@@ -442,7 +509,12 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
         print("Fetch step failed; writing empty true-I-band NRT output so old detector rows are not reused.", flush=True)
         write_empty_outputs(args.out_dir)
         write_processed_keys(args.state_file, processed_keys, latest_cycle)
-        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        retain_cycle_directory(
+            cycle_data_dir,
+            args.data_dir,
+            args.keep_raw,
+            args.raw_retention_hours,
+        )
         heartbeat("error", "VIIRS download failed or timed out.", fetch_return_code=fetch_result.returncode)
         return processed_keys
 
@@ -450,7 +522,12 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
         print("No complete new IMG/MOD granule sets found this cycle.", flush=True)
         write_empty_outputs(args.out_dir)
         write_processed_keys(args.state_file, processed_keys, latest_cycle)
-        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        retain_cycle_directory(
+            cycle_data_dir,
+            args.data_dir,
+            args.keep_raw,
+            args.raw_retention_hours,
+        )
         heartbeat("completed", "No complete new VIIRS granule sets were available.", complete_granule_sets=0)
         return processed_keys
 
@@ -486,7 +563,12 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
     if detector_result.returncode != 0:
         print("Detector step failed; writing empty NRT output for dashboard status.", flush=True)
         write_empty_outputs(args.out_dir)
-        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        retain_cycle_directory(
+            cycle_data_dir,
+            args.data_dir,
+            args.keep_raw,
+            args.raw_retention_hours,
+        )
         latest_cycle["detector_return_code"] = detector_result.returncode
         write_processed_keys(args.state_file, processed_keys, latest_cycle)
         heartbeat("error", "VIIRS detection failed or timed out.", detector_return_code=detector_result.returncode)
@@ -496,7 +578,12 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
 
     csv_path = args.out_dir / "fire_detections.csv"
     if not csv_path.exists():
-        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        retain_cycle_directory(
+            cycle_data_dir,
+            args.data_dir,
+            args.keep_raw,
+            args.raw_retention_hours,
+        )
         latest_cycle["detector_output_missing"] = True
         write_processed_keys(args.state_file, processed_keys, latest_cycle)
         heartbeat("error", "VIIRS detector completed without producing its CSV output.")
@@ -524,7 +611,12 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
         )
 
     if not import_succeeded:
-        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        retain_cycle_directory(
+            cycle_data_dir,
+            args.data_dir,
+            args.keep_raw,
+            args.raw_retention_hours,
+        )
         latest_cycle["database_import_succeeded"] = False
         write_processed_keys(args.state_file, processed_keys, latest_cycle)
         heartbeat("error", "Hotspot database import failed or timed out.", hotspot_rows=row_count)
@@ -533,7 +625,12 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
     processed_keys |= new_sets
     latest_cycle["database_import_succeeded"] = import_succeeded
     write_processed_keys(args.state_file, processed_keys, latest_cycle)
-    cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+    retain_cycle_directory(
+        cycle_data_dir,
+        args.data_dir,
+        args.keep_raw,
+        args.raw_retention_hours,
+    )
 
     heartbeat(
         "completed",
@@ -571,6 +668,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fetch-timeout-minutes", default=30.0, type=float)
     parser.add_argument("--detect-timeout-minutes", default=30.0, type=float)
     parser.add_argument("--import-timeout-minutes", default=5.0, type=float)
+    parser.add_argument(
+        "--raw-retention-hours",
+        default=24.0,
+        type=float,
+        help="Keep downloaded raw cycle files for this many hours.",
+    )
     parser.add_argument("--keep-raw", action="store_true", help="Keep per-cycle raw files for troubleshooting.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--reprocess", action="store_true")
@@ -583,6 +686,8 @@ def parse_args() -> argparse.Namespace:
     normalized_sensors(args.sensors)
     if bool(args.start) != bool(args.end):
         raise ValueError("Use both --start and --end, or neither.")
+    if args.raw_retention_hours < 0:
+        raise ValueError("--raw-retention-hours cannot be negative.")
     if not FETCHER.exists() or not DETECTOR.exists():
         raise FileNotFoundError("detectors/viirs fetcher/main.py was not found.")
     return args
@@ -592,10 +697,14 @@ def main() -> None:
     args = parse_args()
     configure_earthdata_netrc()
     with worker_lock(args.lock_file, args.pid_file):
-        cleanup_orphaned_cycle_directories(args.data_dir, args.keep_raw)
         processed_keys = read_processed_keys(args.state_file)
 
         while True:
+            cleanup_expired_cycle_directories(
+                args.data_dir,
+                args.keep_raw,
+                args.raw_retention_hours,
+            )
             try:
                 processed_keys = run_cycle(args, processed_keys)
             except Exception as exc:

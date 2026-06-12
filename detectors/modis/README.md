@@ -66,6 +66,6 @@ The normal dashboard launcher starts the worker every 15 minutes:
 
 Each cycle searches the latest 24-hour window, skips granules listed in
 `outputs/modis_nrt/processed_granules.json`, detects new pairs, incrementally
-inserts hotspots into PostgreSQL, and deletes the temporary raw HDF files only
-after the cycle finishes. Status is written to
+inserts hotspots into PostgreSQL, and retains downloaded raw HDF files for 24
+hours for inspection before deleting them automatically. Status is written to
 `outputs/modis_nrt/pipeline_status.json`.

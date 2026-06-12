@@ -95,6 +95,42 @@ python pipelines\auto_viirs_nrt_fire_detection.py `
   --dashboard-import
 ```
 
+## Logs
+
+Current logs are separated by component:
+
+- VIIRS automation: `outputs/logs/viirs/`
+- MODIS automation: `outputs/logs/modis/`
+- Dashboard and supporting services: `outputs/logs/services/`
+
+On restart, the previous current log is moved into that component's
+`archive/` folder. Archived logs older than 30 days are removed when
+`start_dashboard.ps1` runs. Set `BHUTAN_FIRE_LOG_RETENTION_DAYS` before
+starting the dashboard to use a different retention period.
+
+Watch the current MODIS log:
+
+```powershell
+Get-Content .\outputs\logs\modis\modis_realtime.log -Wait -Tail 30
+```
+
+Watch the current VIIRS log:
+
+```powershell
+Get-Content .\outputs\logs\viirs\viirs_realtime.log -Wait -Tail 30
+```
+
+## Raw Data Retention
+
+Downloaded NRT files remain available for 24 hours after a processing cycle:
+
+- VIIRS: `data/raw/viirs/nrt/<cycle timestamp>/`
+- MODIS: `data/raw/modis/nrt/<cycle timestamp>/`
+
+The automation removes expired cycle folders before each new cycle. Empty
+cycle folders are removed immediately. Use `--raw-retention-hours` to change
+the retention period, or `--keep-raw` to disable automatic raw-data deletion.
+
 ## Run MODIS Detection
 
 ```powershell
