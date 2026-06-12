@@ -57,6 +57,42 @@ function Start-DashboardProcess {
     throw "$Name did not start. Check outputs\$LogName.err.log."
 }
 
+function Start-NrtAutomation {
+    param([string]$PythonPath)
+
+    $pidFile = Join-Path $workspace "outputs\viirs_nrt\realtime_worker.pid"
+    if (Test-Path -LiteralPath $pidFile) {
+        $existingPid = [int](Get-Content -LiteralPath $pidFile -Raw).Trim()
+        $existingProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $existingPid" -ErrorAction SilentlyContinue
+        if ($existingProcess -and $existingProcess.CommandLine -like "*auto_viirs_nrt_fire_detection.py*") {
+            Write-Host "VIIRS NRT automation is already running as process $existingPid."
+            return
+        }
+        Remove-Item -LiteralPath $pidFile -Force
+    }
+
+    $process = Start-Process `
+        -FilePath $PythonPath `
+        -ArgumentList @(
+            "pipelines\auto_viirs_nrt_fire_detection.py",
+            "--interval-minutes", "15",
+            "--lookback-hours", "24",
+            "--max-granules", "200",
+            "--dashboard-import"
+        ) `
+        -WorkingDirectory $workspace `
+        -RedirectStandardOutput (Join-Path $logDirectory "viirs_realtime.log") `
+        -RedirectStandardError (Join-Path $logDirectory "viirs_realtime.err.log") `
+        -WindowStyle Hidden `
+        -PassThru
+
+    Start-Sleep -Seconds 2
+    if ($process.HasExited) {
+        throw "VIIRS NRT automation did not start. Check outputs\logs\viirs_realtime.err.log."
+    }
+    Write-Host "VIIRS NRT automation started as process $($process.Id)."
+}
+
 $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
 
 if ($env:BHUTAN_FIRE_PYTHON) {
@@ -145,6 +181,8 @@ Start-DashboardProcess `
     -ArgumentList @("run", "dev", "--", "--host", "127.0.0.1") `
     -WorkingDirectory (Join-Path $dashboard "client") `
     -LogName "dashboard_client"
+
+Start-NrtAutomation -PythonPath $python
 
 Write-Host ""
 Write-Host "Dashboard ready: http://127.0.0.1:5173/"

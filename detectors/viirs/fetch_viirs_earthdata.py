@@ -16,6 +16,7 @@ the detector needs I-band thermal inputs plus M13 validation:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -105,7 +106,31 @@ def search_product(short_name: str, temporal: tuple[str, str], max_granules: int
     return earthaccess.search_data(**kwargs)
 
 
-def download_product_set(product_set: ProductSet, temporal: tuple[str, str], max_granules: int, out_root: Path) -> int:
+def read_skip_keys(path: Path | None) -> set[str]:
+    """Read satellite:granule keys that were already processed."""
+    if not path or not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+    normalized = set()
+    for value in payload.get("processed", []):
+        key = str(value)
+        if key.startswith("suomi_npp:"):
+            key = "snpp:" + key.split(":", 1)[1]
+        normalized.add(key)
+    return normalized
+
+
+def download_product_set(
+    product_set: ProductSet,
+    temporal: tuple[str, str],
+    max_granules: int,
+    out_root: Path,
+    skip_keys: set[str],
+) -> int:
     """Download IMG and MOD product pairs for one satellite."""
     product_names = [product_set.img_data, product_set.img_geo, product_set.mod_data, product_set.mod_geo]
     results_by_product = {}
@@ -125,6 +150,10 @@ def download_product_set(product_set: ProductSet, temporal: tuple[str, str], max
 
     downloaded_count = 0
     for key in common_keys:
+        processed_key = f"{product_set.folder}:{key}"
+        if processed_key in skip_keys:
+            print(f"Skipping already processed {product_set.label} granule set {key}.", flush=True)
+            continue
         granules = [results_by_product[product_name][key] for product_name in product_names]
         print(f"Downloading {product_set.label} granule set {key}...", flush=True)
         paths = earthaccess.download(granules, local_path=str(output_dir), threads=4)
@@ -141,6 +170,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sensors", default="snpp,noaa20,noaa21", help="Comma list: snpp,noaa20,noaa21")
     parser.add_argument("--max-granules", default=80, type=int)
     parser.add_argument("--out-dir", default=PATHS.viirs, type=Path)
+    parser.add_argument("--skip-keys-file", default=None, type=Path)
     return parser.parse_args()
 
 
@@ -152,12 +182,13 @@ def main() -> None:
     catalog = ARCHIVE_PRODUCTS if args.mode == "archive" else NRT_PRODUCTS
     selected = [name.strip() for name in args.sensors.split(",") if name.strip()]
     temporal = (args.start, args.end)
+    skip_keys = read_skip_keys(args.skip_keys_file)
 
     total = 0
     for sensor in selected:
         if sensor not in catalog:
             raise SystemExit(f"Unknown sensor {sensor!r}. Use snpp,noaa20,noaa21.")
-        total += download_product_set(catalog[sensor], temporal, args.max_granules, args.out_dir)
+        total += download_product_set(catalog[sensor], temporal, args.max_granules, args.out_dir, skip_keys)
 
     print(f"Download complete. Files downloaded/reused: {total}")
     print(f"Output folder: {args.out_dir.resolve()}")

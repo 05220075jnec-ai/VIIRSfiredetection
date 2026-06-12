@@ -15,6 +15,7 @@ filtering, terrain/LULC/building context, and 3-satellite fusion.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -34,6 +35,7 @@ DETECTOR_ROOT = PROJECT_ROOT / "detectors" / "viirs"
 FETCHER = DETECTOR_ROOT / "fetch_viirs_earthdata.py"
 DETECTOR = DETECTOR_ROOT / "main.py"
 GRANULE_TOKEN = re.compile(r"\.A(\d{7})\.(\d{4})\.")
+CYCLE_DIRECTORY_TOKEN = re.compile(r"\d{8}T\d{6}Z")
 
 SENSOR_NAMES = {
     "suomi_npp": "snpp",
@@ -77,6 +79,7 @@ def run_command(
     command: list[str],
     cwd: Path,
     heartbeat=None,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a subprocess and keep the dashboard heartbeat fresh while it works."""
     print(" ".join(str(part) for part in command), flush=True)
@@ -92,8 +95,32 @@ def run_command(
         heartbeat_thread = threading.Thread(target=pulse, daemon=True)
         heartbeat_thread.start()
 
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creationflags,
+    )
     try:
-        result = subprocess.run(command, cwd=str(cwd), text=True, capture_output=True, check=False)
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        else:
+            process.kill()
+        stdout, stderr = process.communicate()
+        timeout_message = f"Command timed out after {timeout_seconds:g} seconds."
+        stderr = f"{stderr.rstrip()}\n{timeout_message}".strip()
+        result = subprocess.CompletedProcess(command, 124, stdout, stderr)
     finally:
         stop_heartbeat.set()
         if heartbeat_thread:
@@ -122,17 +149,75 @@ def read_processed_keys(path: Path) -> set[str]:
     if not path.exists():
         return set()
     try:
-        return set(json.loads(path.read_text(encoding="utf-8")).get("processed", []))
+        keys = set(json.loads(path.read_text(encoding="utf-8")).get("processed", []))
+        return {
+            "snpp:" + key.split(":", 1)[1] if key.startswith("suomi_npp:") else key
+            for key in keys
+        }
     except json.JSONDecodeError:
         return set()
 
 
 def write_processed_keys(path: Path, keys: set[str], latest_cycle: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
         json.dumps({"processed": sorted(keys), "latest_cycle": latest_cycle}, indent=2),
         encoding="utf-8",
     )
+    temporary_path.replace(path)
+
+
+@contextlib.contextmanager
+def worker_lock(lock_path: Path, pid_path: Path):
+    """Prevent two automation workers from running at the same time."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_handle = lock_path.open("a+b")
+    acquired = False
+    try:
+        lock_handle.seek(0, os.SEEK_END)
+        if lock_handle.tell() == 0:
+            lock_handle.write(b"0")
+            lock_handle.flush()
+        lock_handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                msvcrt.locking(lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise RuntimeError("Another VIIRS NRT automation worker is already running.") from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise RuntimeError("Another VIIRS NRT automation worker is already running.") from exc
+
+        acquired = True
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        yield
+    finally:
+        if acquired:
+            pid_path.unlink(missing_ok=True)
+            if os.name == "nt":
+                import msvcrt
+
+                lock_handle.seek(0)
+                try:
+                    msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                import fcntl
+
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+        lock_handle.close()
 
 
 def discover_complete_granule_sets(data_dir: Path) -> set[str]:
@@ -214,16 +299,52 @@ def sync_dashboard_compat_outputs(out_dir: Path) -> None:
         clusters.write_text('{"type":"FeatureCollection","features":[]}\n', encoding="utf-8")
 
 
-def import_outputs_to_dashboard(csv_path: Path, dashboard_root: Path) -> None:
+def import_outputs_to_dashboard(
+    csv_path: Path,
+    dashboard_root: Path,
+    timeout_seconds: float,
+    heartbeat=None,
+) -> bool:
     importer = dashboard_root / "server" / "scripts" / "importCustomViirsOutput.js"
     if not importer.exists():
-        print(f"Dashboard importer not found, skipping DB import: {importer}", flush=True)
-        return
+        print(f"Dashboard importer not found: {importer}", flush=True)
+        return False
 
     print(f"Importing true I-band NRT detections into dashboard database: {csv_path}", flush=True)
-    result = run_command(["node", str(importer), str(csv_path)], dashboard_root / "server")
+    result = run_command(
+        ["node", str(importer), str(csv_path)],
+        dashboard_root / "server",
+        heartbeat=heartbeat,
+        timeout_seconds=timeout_seconds,
+    )
     if result.returncode != 0:
         print(f"Dashboard import failed with exit code {result.returncode}.", flush=True)
+        return False
+    return True
+
+
+def cleanup_cycle_directory(cycle_data_dir: Path, data_root: Path, keep_raw: bool) -> None:
+    if keep_raw or not cycle_data_dir.exists():
+        return
+    resolved_cycle = cycle_data_dir.resolve()
+    resolved_root = data_root.resolve()
+    if resolved_cycle == resolved_root:
+        raise RuntimeError("Refusing to remove the NRT data root.")
+    try:
+        resolved_cycle.relative_to(resolved_root)
+    except ValueError as exc:
+        raise RuntimeError(f"Refusing to remove raw data outside {resolved_root}.") from exc
+    shutil.rmtree(resolved_cycle)
+    print(f"Removed transient raw VIIRS files: {resolved_cycle}", flush=True)
+
+
+def cleanup_orphaned_cycle_directories(data_root: Path, keep_raw: bool) -> None:
+    """Remove timestamped NRT work folders left by a killed worker."""
+    if keep_raw or not data_root.exists():
+        return
+    for path in data_root.iterdir():
+        if path.is_dir() and CYCLE_DIRECTORY_TOKEN.fullmatch(path.name):
+            cleanup_cycle_directory(path, data_root, keep_raw=False)
 
 
 def cycle_window(args: argparse.Namespace) -> tuple[datetime, datetime]:
@@ -292,12 +413,14 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
             str(args.max_granules),
             "--out-dir",
             str(cycle_data_dir),
-        ],
+        ]
+        + ([] if args.reprocess else ["--skip-keys-file", str(args.state_file)]),
         DETECTOR_ROOT,
         heartbeat=lambda: heartbeat(
             "fetching",
             "Downloading available VIIRS NRT granules from NASA Earthdata.",
         ),
+        timeout_seconds=args.fetch_timeout_minutes * 60,
     )
 
     heartbeat("checking", "Checking downloaded files for complete IMG/MOD granule sets.")
@@ -319,13 +442,15 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
         print("Fetch step failed; writing empty true-I-band NRT output so old detector rows are not reused.", flush=True)
         write_empty_outputs(args.out_dir)
         write_processed_keys(args.state_file, processed_keys, latest_cycle)
-        heartbeat("completed", "Fetch failed; empty dashboard outputs were written.", fetch_return_code=fetch_result.returncode)
+        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        heartbeat("error", "VIIRS download failed or timed out.", fetch_return_code=fetch_result.returncode)
         return processed_keys
 
-    if not complete_sets:
-        print("No complete IMG/MOD granule sets found this cycle.", flush=True)
+    if not new_sets:
+        print("No complete new IMG/MOD granule sets found this cycle.", flush=True)
         write_empty_outputs(args.out_dir)
         write_processed_keys(args.state_file, processed_keys, latest_cycle)
+        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
         heartbeat("completed", "No complete new VIIRS granule sets were available.", complete_granule_sets=0)
         return processed_keys
 
@@ -344,7 +469,7 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
             str(cycle_data_dir),
             "--no-fallback-raw",
             "--max-observations",
-            str(args.max_observations or max(args.max_granules * 3, len(complete_sets))),
+            str(args.max_observations or max(args.max_granules * 3, len(new_sets))),
             "--out-dir",
             str(args.out_dir),
         ],
@@ -355,29 +480,60 @@ def run_cycle(args: argparse.Namespace, processed_keys: set[str]) -> set[str]:
             complete_granule_sets=len(complete_sets),
             new_granule_sets=len(new_sets),
         ),
+        timeout_seconds=args.detect_timeout_minutes * 60,
     )
 
     if detector_result.returncode != 0:
         print("Detector step failed; writing empty NRT output for dashboard status.", flush=True)
         write_empty_outputs(args.out_dir)
-    else:
-        sync_dashboard_compat_outputs(args.out_dir)
+        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        latest_cycle["detector_return_code"] = detector_result.returncode
+        write_processed_keys(args.state_file, processed_keys, latest_cycle)
+        heartbeat("error", "VIIRS detection failed or timed out.", detector_return_code=detector_result.returncode)
+        return processed_keys
+
+    sync_dashboard_compat_outputs(args.out_dir)
 
     csv_path = args.out_dir / "fire_detections.csv"
+    if not csv_path.exists():
+        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        latest_cycle["detector_output_missing"] = True
+        write_processed_keys(args.state_file, processed_keys, latest_cycle)
+        heartbeat("error", "VIIRS detector completed without producing its CSV output.")
+        return processed_keys
+
     row_count = 0
-    if csv_path.exists():
-        try:
-            row_count = max(0, len(pd.read_csv(csv_path)))
-        except pd.errors.EmptyDataError:
-            row_count = 0
+    try:
+        row_count = max(0, len(pd.read_csv(csv_path)))
+    except pd.errors.EmptyDataError:
+        row_count = 0
     latest_cycle["hotspot_rows"] = row_count
 
-    processed_keys |= complete_sets
-    write_processed_keys(args.state_file, processed_keys, latest_cycle)
-
-    if args.dashboard_import and csv_path.exists():
+    import_succeeded = True
+    if args.dashboard_import:
         heartbeat("importing", "Importing detected VIIRS hotspots into PostgreSQL.", hotspot_rows=row_count)
-        import_outputs_to_dashboard(csv_path, args.dashboard_root)
+        import_succeeded = import_outputs_to_dashboard(
+            csv_path,
+            args.dashboard_root,
+            args.import_timeout_minutes * 60,
+            heartbeat=lambda: heartbeat(
+                "importing",
+                "Importing detected VIIRS hotspots into PostgreSQL.",
+                hotspot_rows=row_count,
+            ),
+        )
+
+    if not import_succeeded:
+        cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
+        latest_cycle["database_import_succeeded"] = False
+        write_processed_keys(args.state_file, processed_keys, latest_cycle)
+        heartbeat("error", "Hotspot database import failed or timed out.", hotspot_rows=row_count)
+        return processed_keys
+
+    processed_keys |= new_sets
+    latest_cycle["database_import_succeeded"] = import_succeeded
+    write_processed_keys(args.state_file, processed_keys, latest_cycle)
+    cleanup_cycle_directory(cycle_data_dir, args.data_dir, args.keep_raw)
 
     heartbeat(
         "completed",
@@ -401,6 +557,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", default=PROJECT_ROOT / "outputs" / "viirs_nrt", type=Path)
     parser.add_argument("--state-file", default=PROJECT_ROOT / "outputs" / "viirs_nrt" / "processed_granules.json", type=Path)
     parser.add_argument("--status-file", default=PROJECT_ROOT / "outputs" / "viirs_nrt" / "pipeline_status.json", type=Path)
+    parser.add_argument("--lock-file", default=PROJECT_ROOT / "outputs" / "viirs_nrt" / "automation.lock", type=Path)
+    parser.add_argument("--pid-file", default=PROJECT_ROOT / "outputs" / "viirs_nrt" / "realtime_worker.pid", type=Path)
     parser.add_argument("--dashboard-root", default=default_dashboard_root(), type=Path)
     parser.add_argument("--dashboard-import", action="store_true")
     parser.add_argument("--sensors", default="suomi_npp,noaa20,noaa21", help="Comma list: suomi_npp,noaa20,noaa21")
@@ -410,6 +568,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval-minutes", default=15.0, type=float)
     parser.add_argument("--max-granules", default=80, type=int)
     parser.add_argument("--max-observations", default=None, type=int)
+    parser.add_argument("--fetch-timeout-minutes", default=30.0, type=float)
+    parser.add_argument("--detect-timeout-minutes", default=30.0, type=float)
+    parser.add_argument("--import-timeout-minutes", default=5.0, type=float)
+    parser.add_argument("--keep-raw", action="store_true", help="Keep per-cycle raw files for troubleshooting.")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--reprocess", action="store_true")
     parser.add_argument("--archive", action="store_true", help="Use archive products for fixed historical dates.")
@@ -429,34 +591,36 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     configure_earthdata_netrc()
-    processed_keys = read_processed_keys(args.state_file)
+    with worker_lock(args.lock_file, args.pid_file):
+        cleanup_orphaned_cycle_directories(args.data_dir, args.keep_raw)
+        processed_keys = read_processed_keys(args.state_file)
 
-    while True:
-        try:
-            processed_keys = run_cycle(args, processed_keys)
-        except Exception as exc:
-            write_pipeline_status(
-                args.status_file,
-                "error",
-                f"NRT cycle failed: {exc}",
-            )
-            print(f"NRT cycle failed: {exc}", flush=True)
-            if args.once or (args.start and args.end):
-                raise
-        if args.once or (args.start and args.end):
-            break
-        print(f"Sleeping {args.interval_minutes} minutes...", flush=True)
-        sleep_deadline = time.monotonic() + args.interval_minutes * 60
         while True:
-            remaining_seconds = sleep_deadline - time.monotonic()
-            if remaining_seconds <= 0:
+            try:
+                processed_keys = run_cycle(args, processed_keys)
+            except Exception as exc:
+                write_pipeline_status(
+                    args.status_file,
+                    "error",
+                    f"NRT cycle failed: {exc}",
+                )
+                print(f"NRT cycle failed: {exc}", flush=True)
+                if args.once or (args.start and args.end):
+                    raise
+            if args.once or (args.start and args.end):
                 break
-            write_pipeline_status(
-                args.status_file,
-                "sleeping",
-                f"Waiting for the next cycle in {max(1, round(remaining_seconds / 60))} minute(s).",
-            )
-            time.sleep(min(30, remaining_seconds))
+            print(f"Sleeping {args.interval_minutes} minutes...", flush=True)
+            sleep_deadline = time.monotonic() + args.interval_minutes * 60
+            while True:
+                remaining_seconds = sleep_deadline - time.monotonic()
+                if remaining_seconds <= 0:
+                    break
+                write_pipeline_status(
+                    args.status_file,
+                    "sleeping",
+                    f"Waiting for the next cycle in {max(1, round(remaining_seconds / 60))} minute(s).",
+                )
+                time.sleep(min(30, remaining_seconds))
 
 
 if __name__ == "__main__":
