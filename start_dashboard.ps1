@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 $workspace = Split-Path -Parent $MyInvocation.MyCommand.Path
-$dashboard = Join-Path $workspace "ForestFireDashboard-main"
-$logDirectory = Join-Path $workspace "outputs"
+$dashboard = Join-Path $workspace "apps\dashboard"
+$logDirectory = Join-Path $workspace "outputs\logs"
 $condaEnvironment = "bhutan-fire-detection"
 
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
@@ -127,7 +127,7 @@ Start-DashboardProcess `
     -Port 5000 `
     -FilePath $python `
     -ArgumentList @("app.py") `
-    -WorkingDirectory (Join-Path $workspace "Prediction") `
+    -WorkingDirectory (Join-Path $workspace "services\prediction") `
     -LogName "prediction_server"
 
 Start-DashboardProcess `
@@ -135,7 +135,7 @@ Start-DashboardProcess `
     -Port 5001 `
     -FilePath $python `
     -ArgumentList @("app.py") `
-    -WorkingDirectory (Join-Path $workspace "BurnedSeverity") `
+    -WorkingDirectory (Join-Path $workspace "services\burn_severity") `
     -LogName "burn_severity_server"
 
 Start-DashboardProcess `

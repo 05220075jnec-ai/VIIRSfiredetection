@@ -1,127 +1,139 @@
-# VIIRS Fire Detection
+# Bhutan Forest Fire Detection
 
-Command-line workflow for detecting active fire hotspot candidates over Bhutan from VIIRS VNP02MOD radiance granules and matching VNP03MOD geolocation granules.
+Integrated Bhutan fire-monitoring workspace for VIIRS and MODIS hotspot
+detection, PostgreSQL storage, dashboard visualization, fire-risk prediction,
+and dNBR burn-severity mapping.
 
-## Project Layout
+## Project Structure
 
 ```text
-scripts/                 Python command-line workflow
-notebooks/               Original exploratory notebooks
-data/raw/                Downloaded VIIRS NetCDF granules
-data/boundaries/         Bhutan and district boundary files
-data/reference/          Reference or comparison CSV data
-outputs/bhutan/          Generated all-Bhutan hotspot outputs
-outputs/bhutan_boundary/ Generated Bhutan-boundary run outputs
-outputs/mongar/          Generated Mongar district outputs
+apps/
+  dashboard/                 React client, Node API, Docker Compose
+detectors/
+  viirs/                     VIIRS 375 m active-fire algorithm
+  modis/                     MODIS 1 km contextual active-fire algorithm
+services/
+  prediction/                Google Earth Engine fire-risk service
+  burn_severity/             Sentinel-2 dNBR service
+pipelines/                   Historical and automatic NRT orchestration
+notebooks/
+  reference/                 Original exploratory reference notebooks
+  backups/                   Local notebook backups, ignored by Git
+data/                        Raw/reference/processed data, ignored by Git
+outputs/                     Hotspots, logs, state, and backups, ignored by Git
+docs/                        Current and legacy workflow documentation
 ```
 
-## Environment
+## Python Environment
 
-From the project root:
+Create the shared environment once:
 
 ```powershell
 & "C:\Users\Public\miniforge3\Scripts\conda.exe" env create -f environment.yml
+```
+
+Activate it for manual detector or notebook work:
+
+```powershell
 (& "C:\Users\Public\miniforge3\Scripts\conda.exe" "shell.powershell" "hook") |
     Out-String |
     Invoke-Expression
 conda activate bhutan-fire-detection
 ```
 
-The shared `bhutan-fire-detection` environment includes the VIIRS, MODIS HDF,
-Google Earth Engine, Flask, geospatial, machine-learning, and notebook
-dependencies used across the project.
+`start_dashboard.ps1` locates this environment automatically.
 
-To update an existing environment after changing `environment.yml`:
+## Start the Complete System
 
-```powershell
-conda env update -n bhutan-fire-detection -f environment.yml --prune
-```
-
-`start_dashboard.ps1` automatically uses this environment for the prediction
-and burn-severity Python services.
-
-## Run With Local Data
+From the project root:
 
 ```powershell
-python scripts\fetch_and_detect_bhutan_viirs.py --start 2023-04-08 --end 2023-04-17 --local-only
+.\start_dashboard.ps1
 ```
 
-For Mongar:
+Services:
+
+- Dashboard: `http://127.0.0.1:5173`
+- Dashboard API: `http://127.0.0.1:3000`
+- Prediction: `http://127.0.0.1:5000`
+- Burn severity: `http://127.0.0.1:5001`
+- PostgreSQL: `localhost:5433`
+
+The Compose file uses the existing persistent Docker volume
+`forestfiredashboard-main_postgres_data`.
+
+## Run VIIRS Detection
+
+Historical workflow:
 
 ```powershell
-python scripts\fetch_and_detect_bhutan_viirs.py --start 2023-04-08 --end 2023-04-17 --district Mongar --out-dir outputs\mongar --local-only
+python pipelines\fetch_and_detect_bhutan_viirs.py `
+  --start 2023-04-08 `
+  --end 2023-04-17 `
+  --local-only
 ```
 
-## Run With NASA Earthdata Search
-
-Keep Earthdata credentials in a local `.netrc` file at the project root. The file is ignored by Git.
+Direct detector:
 
 ```powershell
-python scripts\fetch_and_detect_bhutan_viirs.py --start 2023-04-08 --end 2023-04-17
+python detectors\viirs\main.py --real
 ```
 
-## Run Automatic VIIRS NRT Monitoring
-
-This fetches raw VIIRS NRT moderate-resolution radiance and geolocation swaths for:
-
-- Suomi NPP: `VNP02MOD_NRT` + `VNP03MOD_NRT`
-- NOAA-20: `VJ102MOD_NRT` + `VJ103MOD_NRT`
-- NOAA-21: `VJ202MOD_NRT` + `VJ203MOD_NRT`
-
-It applies the same Bhutan boundary and M13 log-tail detection logic used by `scripts\fetch_and_detect_bhutan_viirs.py`, including the `0 < M13 < 100` raw-radiance sanity filter.
-
-Run once:
+Automatic NRT run:
 
 ```powershell
-python scripts\auto_viirs_nrt_fire_detection.py --once
+python pipelines\auto_viirs_nrt_fire_detection.py --once
 ```
 
-Run continuously every 15 minutes:
+Continuous 15-minute monitoring with database import:
 
 ```powershell
-python scripts\auto_viirs_nrt_fire_detection.py --interval-minutes 15
+python pipelines\auto_viirs_nrt_fire_detection.py `
+  --interval-minutes 15 `
+  --lookback-hours 24 `
+  --max-granules 200 `
+  --dashboard-import
 ```
 
-Run continuously and import each cycle into the ForestFireDashboard PostgreSQL database:
+## Run MODIS Detection
 
 ```powershell
-python scripts\auto_viirs_nrt_fire_detection.py --interval-minutes 15 --lookback-hours 24 --max-granules 200 --dashboard-import
+python detectors\modis\main.py
 ```
 
-This requires the dashboard database to be running from `ForestFireDashboard-main`:
+MODIS reads Terra/Aqua HDF pairs from `data/raw/modis/hdf` and writes the
+dashboard-compatible output under `outputs/modis_detector_test`.
 
-```powershell
-docker compose up -d
-```
-
-The Python script calls:
+## Data Layout
 
 ```text
-ForestFireDashboard-main/server/scripts/importCustomViirsOutput.js
+data/
+  raw/
+    viirs/
+      historical_detector/
+      historical_workspace/
+      nrt/
+      nrt_cycle_archive/
+    modis/
+      hdf/
+      standard_archive/
+    archive/
+      combined_viirs_modis/
+  reference/
+    boundaries/
+    buildings/
+    dem/
+    lulc/
+    vectors/
+  processed/
+    burn_severity/
 ```
 
-That importer converts `outputs/viirs_nrt/viirs_nrt_hotspots.csv` into the dashboard's existing `fire_data` table, so the current React map can display the custom VIIRS detections through `/api/fire-data`.
+Raw satellite files remain outside Git. Generated hotspot CSV, GeoJSON, and
+Shapefile outputs remain under `outputs/`.
 
-Default outputs:
+## Documentation
 
-```text
-outputs/viirs_nrt/viirs_nrt_hotspots.csv
-outputs/viirs_nrt/viirs_nrt_hotspots.geojson
-outputs/viirs_nrt/viirs_nrt_hotspots.shp
-outputs/viirs_nrt/viirs_nrt_clusters.geojson
-outputs/viirs_nrt/processed_granules.json
-```
-
-Downloaded NRT granules are saved under:
-
-```text
-data/viirs_nrt/
-```
-
-Useful options:
-
-```powershell
-python scripts\auto_viirs_nrt_fire_detection.py --once --lookback-hours 12 --max-granules 120
-python scripts\auto_viirs_nrt_fire_detection.py --sensors suomi_npp,noaa20
-python scripts\auto_viirs_nrt_fire_detection.py --reprocess --once
-```
+- Current workflow: `docs/PROJECT_WORKFLOW.md`
+- Pre-restructure detailed reference: `docs/PROJECT_WORKFLOW_LEGACY.md`
+- MODIS algorithm report context: `docs/MODIS_DETECTION_REPORT_CONTEXT.md`
