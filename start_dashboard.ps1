@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $workspace = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dashboard = Join-Path $workspace "ForestFireDashboard-main"
 $logDirectory = Join-Path $workspace "outputs"
+$condaEnvironment = "bhutan-fire-detection"
 
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 
@@ -57,7 +58,53 @@ function Start-DashboardProcess {
 }
 
 $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-$python = (Get-Command python.exe -ErrorAction Stop).Source
+
+if ($env:BHUTAN_FIRE_PYTHON) {
+    $python = (Resolve-Path -LiteralPath $env:BHUTAN_FIRE_PYTHON -ErrorAction Stop).Path
+    $environmentPath = Split-Path -Parent $python
+}
+else {
+    $condaCandidates = @(
+        (Get-Command conda.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+        "C:\Users\Public\miniforge3\Scripts\conda.exe",
+        (Join-Path $env:USERPROFILE "miniforge3\Scripts\conda.exe"),
+        (Join-Path $env:USERPROFILE "anaconda3\Scripts\conda.exe")
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+
+    $conda = $condaCandidates | Select-Object -First 1
+    if (-not $conda) {
+        throw "Conda was not found. Create the '$condaEnvironment' environment from environment.yml first."
+    }
+
+    $environmentPaths = (& $conda env list --json | ConvertFrom-Json).envs
+    $environmentPath = $environmentPaths |
+        Where-Object { (Split-Path -Leaf $_) -eq $condaEnvironment } |
+        Select-Object -First 1
+
+    if (-not $environmentPath) {
+        throw "Conda environment '$condaEnvironment' was not found. Run: conda env create -f environment.yml"
+    }
+
+    $python = Join-Path $environmentPath "python.exe"
+}
+
+$environmentBinaryPaths = @(
+    $environmentPath,
+    (Join-Path $environmentPath "Library\mingw-w64\bin"),
+    (Join-Path $environmentPath "Library\usr\bin"),
+    (Join-Path $environmentPath "Library\bin"),
+    (Join-Path $environmentPath "Scripts"),
+    (Join-Path $environmentPath "bin")
+) | Where-Object { Test-Path -LiteralPath $_ }
+
+$env:CONDA_DEFAULT_ENV = Split-Path -Leaf $environmentPath
+$env:CONDA_PREFIX = $environmentPath
+$env:GDAL_DATA = Join-Path $environmentPath "Library\share\gdal"
+$env:PROJ_DATA = Join-Path $environmentPath "Library\share\proj"
+$env:PROJ_LIB = $env:PROJ_DATA
+$env:PATH = (($environmentBinaryPaths + $env:PATH) -join [IO.Path]::PathSeparator)
+
+Write-Host "Python environment: $python"
 
 Push-Location $dashboard
 try {

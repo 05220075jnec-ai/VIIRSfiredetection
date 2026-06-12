@@ -20,9 +20,25 @@ outputs/mongar/          Generated Mongar district outputs
 From the project root:
 
 ```powershell
-..\gee_env\Scripts\Activate.ps1
-pip install -r requirements.txt
+& "C:\Users\Public\miniforge3\Scripts\conda.exe" env create -f environment.yml
+(& "C:\Users\Public\miniforge3\Scripts\conda.exe" "shell.powershell" "hook") |
+    Out-String |
+    Invoke-Expression
+conda activate bhutan-fire-detection
 ```
+
+The shared `bhutan-fire-detection` environment includes the VIIRS, MODIS HDF,
+Google Earth Engine, Flask, geospatial, machine-learning, and notebook
+dependencies used across the project.
+
+To update an existing environment after changing `environment.yml`:
+
+```powershell
+conda env update -n bhutan-fire-detection -f environment.yml --prune
+```
+
+`start_dashboard.ps1` automatically uses this environment for the prediction
+and burn-severity Python services.
 
 ## Run With Local Data
 

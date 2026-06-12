@@ -1,0 +1,26 @@
+name: bhutan-fire-detection
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - earthaccess
+  - earthengine-api
+  - flask
+  - folium
+  - geopandas
+  - ipykernel
+  - jupyterlab
+  - matplotlib
+  - netcdf4
+  - numpy
+  - pandas
+  - pyhdf
+  - pyogrio
+  - pyproj
+  - rasterio
+  - rioxarray
+  - scikit-image
+  - scikit-learn
+  - scipy
+  - shapely
+  - xarray
